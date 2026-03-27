@@ -1,0 +1,15 @@
+# Node
+node_modules
+dist
+.env
+
+# Foundry
+out
+cache
+
+# VS Code
+.vscode
+
+# OS
+.DS_Store
+Thumbs.db
