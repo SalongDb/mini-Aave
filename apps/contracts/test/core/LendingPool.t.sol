@@ -48,4 +48,16 @@ contract LendingPoolTest is Test {
         assertEq(aToken.balanceOf(user), 50e18);
         assertEq(token.balanceOf(user), 50e18);
     }
+
+    function testBorrow() public {
+        oracle.setPrice(address(token), 1e18);
+
+        vm.startPrank(user);
+        pool.deposit(address(token), 100e18);
+
+        pool.borrow(address(token), 50e18);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(user), 50e18);
+    }
 }
