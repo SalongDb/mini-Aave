@@ -8,9 +8,10 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 contract LendingPool {
     address public owner;
     IOracle public oracle;
-    address public supportedToken;
 
     mapping(address => address) public aTokens;
+    address[] public supportedTokens;
+
     mapping(address => mapping(address => uint256)) public deposits;
     mapping(address => mapping(address => uint256)) public borrows;
 
@@ -22,13 +23,15 @@ contract LendingPool {
     }
 
     modifier onlyOwner() {
-        require(msg.sender == owner,"Not owner");
+        require(msg.sender == owner, "Not owner");
         _;
     }
 
     function addToken(address token, address aToken) external onlyOwner {
+        require(aTokens[token] == address(0), "Already added");
+
         aTokens[token] = aToken;
-        supportedToken = token;
+        supportedTokens.push(token);
     }
 
     function deposit(address token, uint256 amount) external {
@@ -52,9 +55,14 @@ contract LendingPool {
 
         require(deposits[msg.sender][token] >= amount, "Not enough balance");
 
+        require(
+            _healthFactorAfterWithdraw(msg.sender, token, amount) > 1e18,
+            "Unhealthy withdraw"
+        );
+
         deposits[msg.sender][token] -= amount;
 
-        AToken(aToken).burn(msg.sender,amount);
+        AToken(aToken).burn(msg.sender, amount);
 
         IERC20(token).transfer(msg.sender, amount);
     }
@@ -66,37 +74,96 @@ contract LendingPool {
         require(aToken != address(0), "Token not supported");
 
         uint256 borrowValue = _getUSDValue(token, amount);
-        uint256 maxBorrow = (_getTotalCollateralValue(msg.sender) * COLLATERAL_FACTOR) / 100;
+        uint256 newBorrowValue = _getTotalBorrowValue(msg.sender) + borrowValue;
 
-        require( _getTotalBorrowValue(msg.sender) + borrowValue <= maxBorrow, "Exceeds borrow limit");
+        require(
+            _healthFactorAfterBorrow(msg.sender, newBorrowValue) > 1e18,
+            "Unhealthy borrow"
+        );
 
         borrows[msg.sender][token] += amount;
 
         IERC20(token).transfer(msg.sender, amount);
     }
 
-    function _getUSDValue(address token, uint256 amount) internal view returns (uint256) {
+    function _getUSDValue(
+        address token,
+        uint256 amount
+    ) internal view returns (uint256) {
         uint256 price = oracle.getPrice(token);
         return (amount * price) / 1e18;
     }
 
-    function _getTotalCollateralValue(address user) internal view returns (uint256) {
-        uint256 amount = deposits[user][supportedToken];
-        uint256 price = oracle.getPrice(supportedToken);
+    function _getTotalCollateralValue(
+        address user
+    ) internal view returns (uint256 totalValue) {
+        for (uint i = 0; i < supportedTokens.length; i++) {
+            address token = supportedTokens[i];
+            uint256 amount = deposits[user][token];
 
-        return (amount * price) / 1e18;
+            if (amount > 0) {
+                uint256 price = oracle.getPrice(token);
+                totalValue += (amount * price) / 1e18;
+            }
+        }
     }
 
-    function _getTotalBorrowValue(address) internal view returns (uint256) {
-        return 0;
+    function _getTotalBorrowValue(
+        address user
+    ) internal view returns (uint256 totalValue) {
+        for (uint i = 0; i < supportedTokens.length; i++) {
+            address token = supportedTokens[i];
+            uint256 amount = borrows[user][token];
+
+            if (amount > 0) {
+                uint256 price = oracle.getPrice(token);
+                totalValue += (amount * price) / 1e18;
+            }
+        }
     }
 
-    function isHealthy(address user, address token, uint256 withdrawAmount) internal view returns (bool) {
-        uint256 remaining = deposits[user][token] - withdrawAmount;
-        uint256 collateralValue = _getUSDValue(token, remaining);
+    function getHealthFactor(address user) public view returns (uint256) {
+        uint256 totalBorrow = _getTotalBorrowValue(user);
 
-        uint256 maxBorrow = (collateralValue * COLLATERAL_FACTOR) / 100;
+        if (totalBorrow == 0) {
+            return type(uint256).max;
+        }
 
-        return _getTotalBorrowValue(user) <= maxBorrow;
+        uint256 totalCollateral = _getTotalCollateralValue(user);
+
+        uint256 adjustedCollateral = (totalCollateral * COLLATERAL_FACTOR) /
+            100;
+
+        return (adjustedCollateral * 1e18) / totalBorrow;
+    }
+
+    function _healthFactorAfterBorrow(
+        address user,
+        uint256 newBorrowValue
+    ) internal view returns (uint256) {
+        uint256 totalCollateral = _getTotalCollateralValue(user);
+        uint256 adjustedCollateral = (totalCollateral * COLLATERAL_FACTOR) / 100;
+
+        return (adjustedCollateral * 1e18) / newBorrowValue;
+    }
+
+    function _healthFactorAfterWithdraw(
+        address user,
+        address token,
+        uint256 withdrawAmount
+    ) internal view returns (uint256) {
+        uint256 totalBorrow = _getTotalBorrowValue(user);
+
+        if (totalBorrow == 0) {
+            return type(uint256).max;
+        }
+
+        uint256 totalCollateral = _getTotalCollateralValue(user);
+        uint256 withdrawValue = _getUSDValue(token, withdrawAmount);
+
+        uint256 newCollateral = totalCollateral - withdrawValue;
+        uint256 adjustedCollateral = (newCollateral * COLLATERAL_FACTOR) / 100;
+
+        return (adjustedCollateral * 1e18) / totalBorrow;
     }
 }
