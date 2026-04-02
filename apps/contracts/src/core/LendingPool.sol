@@ -16,6 +16,7 @@ contract LendingPool {
     mapping(address => mapping(address => uint256)) public borrows;
 
     uint256 public constant COLLATERAL_FACTOR = 75;
+    uint256 public constant LIQUIDITION_BONUS = 10;
 
     constructor(address _oracle) {
         owner = msg.sender;
@@ -28,7 +29,6 @@ contract LendingPool {
     }
 
     function addToken(address token, address aToken) external onlyOwner {
-        require(aTokens[token] == address(0), "Already added");
 
         aTokens[token] = aToken;
         supportedTokens.push(token);
@@ -85,6 +85,35 @@ contract LendingPool {
 
         IERC20(token).transfer(msg.sender, amount);
     }
+
+    function liquidate(
+        address user,
+        address debtToken,
+        address collateralToken,
+        uint256 repayAmount
+    ) external {
+        require(getHealthFactor(user) < 1e18, "User is healthy");
+
+        require(borrows[user][debtToken] >= repayAmount, "Too much repay");
+
+        IERC20(debtToken).transferFrom(msg.sender, address(this), repayAmount);
+
+        borrows[user][debtToken] -= repayAmount;
+
+        uint256 repayValue = _getUSDValue(debtToken,repayAmount);
+
+        uint256 bonusValue = (repayValue * LIQUIDITION_BONUS) / 100;
+        uint256 totalValue = repayValue + bonusValue;
+
+        uint256 collateralPrice = oracle.getPrice(collateralToken);
+        uint256 collateralAmount = (totalValue * 1e18) / collateralPrice;
+
+        require( deposits[user][collateralToken] >= collateralAmount, "Not enough collateral");
+
+        deposits[user][collateralToken] -= collateralAmount;
+
+        IERC20(collateralToken).transfer(msg.sender, collateralAmount);
+    } 
 
     function _getUSDValue(
         address token,

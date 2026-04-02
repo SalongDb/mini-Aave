@@ -46,6 +46,50 @@ contract LendingPoolTest is Test {
         oracle.setPrice(address(token2), 2e18); // $2
     }
 
+function testLiquidation() public {
+    address liquidator = address(2);
+
+    // Add liquidity
+    token2.mint(address(pool), 1000e18);
+
+    vm.startPrank(user);
+
+    // Deposit collateral
+    pool.deposit(address(token1), 100e18);
+
+    // Borrow different asset
+    pool.borrow(address(token2), 30e18);
+
+    vm.stopPrank();
+
+    // Drop collateral price
+    oracle.setPrice(address(token1), 0.5e18);
+
+    // Confirm unhealthy
+    assertLt(pool.getHealthFactor(user), 1e18);
+
+    // Setup liquidator
+    token2.mint(liquidator, 100e18);
+
+    vm.startPrank(liquidator);
+    token2.approve(address(pool), type(uint256).max);
+
+    // Liquidate
+    pool.liquidate(
+        user,
+        address(token2), // debt
+        address(token1), // collateral
+        20e18
+    );
+
+    vm.stopPrank();
+
+    // Assertions
+    assertLt(pool.borrows(user, address(token2)), 30e18);
+    assertLt(pool.deposits(user, address(token1)), 100e18);
+    assertGt(token1.balanceOf(liquidator), 0);
+}
+
     // ----------------------
     // BASIC TESTS
     // ----------------------
@@ -105,7 +149,7 @@ contract LendingPoolTest is Test {
         vm.startPrank(user);
 
         pool.deposit(address(token1), 100e18); // $100
-        pool.borrow(address(token1), 50e18);   // borrow $50
+        pool.borrow(address(token1), 50e18); // borrow $50
 
         vm.stopPrank();
 
@@ -170,31 +214,31 @@ contract LendingPoolTest is Test {
     }
 
     function testMultiTokenBorrowPower() public {
-    address lender = address(2);
+        address lender = address(2);
 
-    token1.mint(lender, 500e18);
+        token1.mint(lender, 500e18);
 
-    vm.startPrank(lender);
-    token1.approve(address(pool), type(uint256).max);
-    pool.deposit(address(token1), 500e18); // pool now has 500 token1
-    vm.stopPrank();
+        vm.startPrank(lender);
+        token1.approve(address(pool), type(uint256).max);
+        pool.deposit(address(token1), 500e18); // pool now has 500 token1
+        vm.stopPrank();
 
-    vm.startPrank(user);
+        vm.startPrank(user);
 
-    pool.deposit(address(token1), 100e18); // $100
-    pool.deposit(address(token2), 100e18); // $200
+        pool.deposit(address(token1), 100e18); // $100
+        pool.deposit(address(token2), 100e18); // $200
 
-    // total collateral = $300
-    // borrow limit = 75% → $225
+        // total collateral = $300
+        // borrow limit = 75% → $225
 
-    pool.borrow(address(token1), 200e18); // should PASS
+        pool.borrow(address(token1), 200e18); // should PASS
 
-    vm.stopPrank();
+        vm.stopPrank();
 
-    assertEq(pool.borrows(user, address(token1)), 200e18);
+        assertEq(pool.borrows(user, address(token1)), 200e18);
 
-    // user started with 1000, deposited 100 → 900
-    // then borrowed 200 → 1100
-    assertEq(token1.balanceOf(user), 1100e18);
-}
+        // user started with 1000, deposited 100 → 900
+        // then borrowed 200 → 1100
+        assertEq(token1.balanceOf(user), 1100e18);
+    }
 }
