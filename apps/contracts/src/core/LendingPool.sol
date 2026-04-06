@@ -13,7 +13,7 @@ contract LendingPool {
     address[] public supportedTokens;
 
     mapping(address => mapping(address => uint256)) public deposits;
-    mapping(address => mapping(address => uint256)) public borrows;
+    mapping(address => mapping(address => uint256)) public scaledBorrows;
 
     mapping(address => uint256) public totalDeposits;
     mapping(address => uint256) public totalBorrows;
@@ -22,7 +22,7 @@ contract LendingPool {
     mapping(address => uint256) public borrowIndex;
 
     uint256 public constant COLLATERAL_FACTOR = 75;
-    uint256 public constant LIQUIDITION_BONUS = 10;
+    uint256 public constant LIQUIDATION_BONUS = 10;
 
     constructor(address _oracle) {
         owner = msg.sender;
@@ -35,6 +35,8 @@ contract LendingPool {
     }
 
     function addToken(address token, address aToken) external onlyOwner {
+        borrowIndex[token] = 1e18;
+        lastUpdated[token] = block.timestamp;
 
         aTokens[token] = aToken;
         supportedTokens.push(token);
@@ -72,6 +74,7 @@ contract LendingPool {
         );
 
         deposits[msg.sender][token] -= amount;
+        totalDeposits[token] -= amount;
 
         AToken(aToken).burn(msg.sender, amount);
 
@@ -94,9 +97,18 @@ contract LendingPool {
             "Unhealthy borrow"
         );
 
-        borrows[msg.sender][token] += amount;
+        uint256 index = borrowIndex[token];
 
+        uint256 scaledAmount = (amount * 1e18) / index;
+
+        require(
+            IERC20(token).balanceOf(address(this)) >= amount,
+            "Not enough liquidity"
+        );
+        
+        scaledBorrows[msg.sender][token] += scaledAmount;
         totalBorrows[token] += amount;
+
 
         IERC20(token).transfer(msg.sender, amount);
     }
@@ -112,26 +124,34 @@ contract LendingPool {
 
         require(getHealthFactor(user) < 1e18, "User is healthy");
 
-        require(borrows[user][debtToken] >= repayAmount, "Too much repay");
+        uint256 userDebt = getUserBorrow(user, debtToken);
+        require(userDebt >= repayAmount, "Too much repay");
 
         IERC20(debtToken).transferFrom(msg.sender, address(this), repayAmount);
 
-        borrows[user][debtToken] -= repayAmount;
+        uint256 index = borrowIndex[debtToken];
+        uint256 scaledReduction = (repayAmount * 1e18) / index;
 
-        uint256 repayValue = _getUSDValue(debtToken,repayAmount);
+        scaledBorrows[user][debtToken] -= scaledReduction;
+        totalBorrows[debtToken] -= repayAmount;
 
-        uint256 bonusValue = (repayValue * LIQUIDITION_BONUS) / 100;
+        uint256 repayValue = _getUSDValue(debtToken, repayAmount);
+
+        uint256 bonusValue = (repayValue * LIQUIDATION_BONUS) / 100;
         uint256 totalValue = repayValue + bonusValue;
 
         uint256 collateralPrice = oracle.getPrice(collateralToken);
         uint256 collateralAmount = (totalValue * 1e18) / collateralPrice;
 
-        require( deposits[user][collateralToken] >= collateralAmount, "Not enough collateral");
+        require(
+            deposits[user][collateralToken] >= collateralAmount,
+            "Not enough collateral"
+        );
 
         deposits[user][collateralToken] -= collateralAmount;
 
         IERC20(collateralToken).transfer(msg.sender, collateralAmount);
-    } 
+    }
 
     function _getUSDValue(
         address token,
@@ -160,7 +180,7 @@ contract LendingPool {
     ) internal view returns (uint256 totalValue) {
         for (uint i = 0; i < supportedTokens.length; i++) {
             address token = supportedTokens[i];
-            uint256 amount = borrows[user][token];
+            uint256 amount = getUserBorrow(user, token);
 
             if (amount > 0) {
                 uint256 price = oracle.getPrice(token);
@@ -189,7 +209,8 @@ contract LendingPool {
         uint256 newBorrowValue
     ) internal view returns (uint256) {
         uint256 totalCollateral = _getTotalCollateralValue(user);
-        uint256 adjustedCollateral = (totalCollateral * COLLATERAL_FACTOR) / 100;
+        uint256 adjustedCollateral = (totalCollateral * COLLATERAL_FACTOR) /
+            100;
 
         return (adjustedCollateral * 1e18) / newBorrowValue;
     }
@@ -232,15 +253,38 @@ contract LendingPool {
         return baseRate + (util * slope) / 1e18;
     }
 
+    function getUserBorrow(
+        address user,
+        address token
+    ) public view returns (uint256) {
+        uint256 scaled = scaledBorrows[user][token];
+        uint256 index = borrowIndex[token];
+
+        return (scaled * index) / 1e18;
+    }
+
     function accrueInterest(address token) public {
         uint256 timeElapsed = block.timestamp - lastUpdated[token];
-
         if (timeElapsed == 0) return;
+
+        uint256 borrows = totalBorrows[token];
+        if (borrows == 0) {
+            lastUpdated[token] = block.timestamp;
+            return;
+        }
 
         uint256 rate = getBorrowRate(token);
 
-        uint256 interest = (totalBorrows[token] * rate * timeElapsed) / (365 days * 1e18);
+        uint256 interestFactor = (rate * timeElapsed) / (365 days);
 
+        // 🔥 update index
+        borrowIndex[token] =
+            borrowIndex[token] +
+            (borrowIndex[token] * interestFactor) /
+            1e18;
+
+        // update total borrows
+        uint256 interest = (borrows * interestFactor) / 1e18;
         totalBorrows[token] += interest;
 
         lastUpdated[token] = block.timestamp;

@@ -85,7 +85,7 @@ contract LendingPoolTest is Test {
         vm.stopPrank();
 
         // Assertions
-        assertLt(pool.borrows(user, address(token2)), 30e18);
+        assertLt(pool.scaledBorrows(user, address(token2)), 30e18);
         assertLt(pool.deposits(user, address(token1)), 100e18);
         assertGt(token1.balanceOf(liquidator), 0);
     }
@@ -235,7 +235,7 @@ contract LendingPoolTest is Test {
 
         vm.stopPrank();
 
-        assertEq(pool.borrows(user, address(token1)), 200e18);
+        assertEq(pool.scaledBorrows(user, address(token1)), 200e18);
 
         // user started with 1000, deposited 100 → 900
         // then borrowed 200 → 1100
@@ -243,11 +243,10 @@ contract LendingPoolTest is Test {
     }
 
     function testUtilization() public {
-
         vm.startPrank(user);
 
         pool.deposit(address(token1), 100e18); // deposits = 100
-        pool.borrow(address(token1), 50e18); // borrows = 50
+        pool.borrow(address(token1), 50e18); // scaledBorrows = 50
 
         vm.stopPrank();
 
@@ -258,7 +257,6 @@ contract LendingPoolTest is Test {
     }
 
     function testBorrowRate() public {
-
         vm.startPrank(user);
 
         pool.deposit(address(token1), 100e18);
@@ -314,5 +312,24 @@ contract LendingPoolTest is Test {
 
         // Expected ≈ 56e18 (50 + 12%)
         assertApproxEqAbs(afterBorrow, 56e18, 1e16); // allow small error
+    }
+
+    function testBorrowGrowsOverTime() public {
+        vm.startPrank(user);
+
+        pool.deposit(address(token1), 100e18);
+        pool.borrow(address(token1), 50e18);
+
+        vm.stopPrank();
+
+        uint256 before = pool.getUserBorrow(user, address(token1));
+
+        vm.warp(block.timestamp + 365 days);
+
+        pool.accrueInterest(address(token1));
+
+        uint256 afterDebt = pool.getUserBorrow(user, address(token1));
+
+        assertGt(afterDebt, before);
     }
 }
