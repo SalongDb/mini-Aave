@@ -15,6 +15,12 @@ contract LendingPool {
     mapping(address => mapping(address => uint256)) public deposits;
     mapping(address => mapping(address => uint256)) public borrows;
 
+    mapping(address => uint256) public totalDeposits;
+    mapping(address => uint256) public totalBorrows;
+
+    mapping(address => uint256) public lastUpdated;
+    mapping(address => uint256) public borrowIndex;
+
     uint256 public constant COLLATERAL_FACTOR = 75;
     uint256 public constant LIQUIDITION_BONUS = 10;
 
@@ -35,6 +41,8 @@ contract LendingPool {
     }
 
     function deposit(address token, uint256 amount) external {
+        accrueInterest(token);
+
         require(amount > 0, "Amount = 0");
 
         address aToken = aTokens[token];
@@ -43,11 +51,14 @@ contract LendingPool {
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 
         deposits[msg.sender][token] += amount;
+        totalDeposits[token] += amount;
 
         AToken(aToken).mint(msg.sender, amount);
     }
 
     function withdraw(address token, uint256 amount) external {
+        accrueInterest(token);
+
         require(amount > 0, "Amount = 0");
 
         address aToken = aTokens[token];
@@ -68,6 +79,8 @@ contract LendingPool {
     }
 
     function borrow(address token, uint256 amount) external {
+        accrueInterest(token);
+
         require(amount > 0, "Amount = 0");
 
         address aToken = aTokens[token];
@@ -83,6 +96,8 @@ contract LendingPool {
 
         borrows[msg.sender][token] += amount;
 
+        totalBorrows[token] += amount;
+
         IERC20(token).transfer(msg.sender, amount);
     }
 
@@ -92,6 +107,9 @@ contract LendingPool {
         address collateralToken,
         uint256 repayAmount
     ) external {
+        accrueInterest(debtToken);
+        accrueInterest(collateralToken);
+
         require(getHealthFactor(user) < 1e18, "User is healthy");
 
         require(borrows[user][debtToken] >= repayAmount, "Too much repay");
@@ -194,5 +212,37 @@ contract LendingPool {
         uint256 adjustedCollateral = (newCollateral * COLLATERAL_FACTOR) / 100;
 
         return (adjustedCollateral * 1e18) / totalBorrow;
+    }
+
+    function getUtilization(address token) public view returns (uint256) {
+        uint256 tokenDeposits = totalDeposits[token];
+        uint256 tokenBorrows = totalBorrows[token];
+
+        if (tokenDeposits == 0) return 0;
+
+        return (tokenBorrows * 1e18) / tokenDeposits;
+    }
+
+    function getBorrowRate(address token) public view returns (uint256) {
+        uint256 util = getUtilization(token);
+
+        uint256 baseRate = 2e16;
+        uint256 slope = 20e16;
+
+        return baseRate + (util * slope) / 1e18;
+    }
+
+    function accrueInterest(address token) public {
+        uint256 timeElapsed = block.timestamp - lastUpdated[token];
+
+        if (timeElapsed == 0) return;
+
+        uint256 rate = getBorrowRate(token);
+
+        uint256 interest = (totalBorrows[token] * rate * timeElapsed) / (365 days * 1e18);
+
+        totalBorrows[token] += interest;
+
+        lastUpdated[token] = block.timestamp;
     }
 }
