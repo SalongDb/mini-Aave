@@ -12,7 +12,6 @@ contract LendingPool {
     mapping(address => address) public aTokens;
     address[] public supportedTokens;
 
-    mapping(address => mapping(address => uint256)) public scaledDeposits;
     mapping(address => mapping(address => uint256)) public scaledBorrows;
 
     mapping(address => uint256) public totalDeposits;
@@ -57,10 +56,8 @@ contract LendingPool {
         uint256 index = liquidityIndex[token];
         uint256 scaled = (amount * 1e18) / index;
 
-        scaledDeposits[msg.sender][token] += scaled;
+        AToken(aToken).mint(msg.sender, scaled);
         totalDeposits[token] += amount;
-
-        AToken(aToken).mint(msg.sender, amount);
     }
 
     function withdraw(address token, uint256 amount) external {
@@ -83,10 +80,12 @@ contract LendingPool {
 
         uint256 scaledReduction = (amount * 1e18) / liquidityIndex[token];
 
-        scaledDeposits[msg.sender][token] -= scaledReduction;
-        totalDeposits[token] -= amount;
+        uint256 scaledBalance = AToken(aToken).balanceOf(msg.sender);
 
-        AToken(aToken).burn(msg.sender, amount);
+        require(scaledBalance >= scaledReduction, "Not enough balance");
+
+        AToken(aToken).burn(msg.sender, scaledReduction);
+        totalDeposits[token] -= amount;
 
         IERC20(token).transfer(msg.sender, amount);
     }
@@ -119,6 +118,39 @@ contract LendingPool {
         totalBorrows[token] += amount;
 
         IERC20(token).transfer(msg.sender, amount);
+    }
+
+    function repay(address token, uint256 amount) external {
+        accrueInterest(token);
+
+        require(amount > 0, "Amount = 0");
+
+        address aToken = aTokens[token];
+        require(aToken != address(0), "Token not supported");
+
+        uint256 userDebt = getUserBorrow(msg.sender, token);
+        require(userDebt > 0, "No debt");
+
+        // 🔥 Cap repay to user debt (important)
+        uint256 repayAmount = amount > userDebt ? userDebt : amount;
+
+        // 🔥 Transfer tokens from user
+        IERC20(token).transferFrom(msg.sender, address(this), repayAmount);
+
+        // 🔥 Convert to scaled
+        uint256 index = borrowIndex[token];
+        uint256 scaledReduction = (repayAmount * 1e18) / index;
+
+        // 🔥 Reduce borrow
+        uint256 userScaled = scaledBorrows[msg.sender][token];
+
+        if (amount >= userDebt) {
+            // 🔥 full repay → clear dust
+            scaledBorrows[msg.sender][token] = 0;
+        } else {
+            scaledBorrows[msg.sender][token] = userScaled - scaledReduction;
+        }
+        totalBorrows[token] -= repayAmount;
     }
 
     function liquidate(
@@ -154,14 +186,13 @@ contract LendingPool {
         uint256 scaledReduction2 = (collateralAmount * 1e18) /
             liquidityIndex[collateralToken];
 
-        require(
-            scaledDeposits[user][collateralToken] >= scaledReduction2,
-            "Not enough collateral"
+        uint256 scaledBalance = AToken(aTokens[collateralToken]).balanceOf(
+            user
         );
 
-        scaledDeposits[user][collateralToken] -= scaledReduction2;
+        require(scaledBalance >= scaledReduction2, "Not enough collateral");
 
-        AToken(aTokens[collateralToken]).burn(user, collateralAmount);
+        AToken(aTokens[collateralToken]).burn(user, scaledReduction2);
 
         IERC20(collateralToken).transfer(msg.sender, collateralAmount);
     }
@@ -170,7 +201,7 @@ contract LendingPool {
         address user,
         address token
     ) public view returns (uint256) {
-        uint256 scaled = scaledDeposits[user][token];
+        uint256 scaled = AToken(aTokens[token]).balanceOf(user);
         uint256 index = liquidityIndex[token];
 
         return (scaled * index) / 1e18;

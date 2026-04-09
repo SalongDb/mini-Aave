@@ -19,11 +19,11 @@ contract AToken is ERC20 {
         pool = _pool;
     }
 
-    function mint(address to, uint256 amount) external onlyPool {
-        _mint(to, amount);
+    function mint(address to, uint256 scaledAmount) external onlyPool {
+        _mint(to, scaledAmount);
     }
 
-    function burn(address from, uint256 amount) external onlyPool {
-        _burn(from, amount);
+    function burn(address from, uint256 scaledAmount) external onlyPool {
+        _burn(from, scaledAmount);
     }
 }

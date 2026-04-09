@@ -394,4 +394,66 @@ contract LendingPoolTest is Test {
         uint256 borrowerDebt = pool.getUserBorrow(borrower, address(token1));
         assertGt(borrowerDebt, 50e18);
     }
+
+    function testRepayReducesDebt() public {
+        address borrower = address(2);
+        address lender = address(3);
+
+        token1.mint(lender, 100e18);
+        // =============================
+
+        // 1. Setup borrower
+        // =============================
+        token2.mint(borrower, 100e18); // collateral
+        token1.mint(borrower, 100e18); // for repay later
+
+        vm.startPrank(lender);
+        token1.approve(address(pool), type(uint256).max);
+        pool.deposit(address(token1), 100e18); // 🔥 provides liquidity
+        vm.stopPrank();
+
+        vm.startPrank(borrower);
+        token2.approve(address(pool), type(uint256).max);
+        token1.approve(address(pool), type(uint256).max);
+
+        // Deposit collateral ($2 price → strong collateral)
+        pool.deposit(address(token2), 50e18); // $100
+
+        // Borrow token1
+        pool.borrow(address(token1), 50e18); // $50
+        vm.stopPrank();
+
+        // =============================
+        // 2. Warp time (interest accrues)
+        // =============================
+        vm.warp(block.timestamp + 365 days);
+        pool.accrueInterest(address(token1));
+
+        // =============================
+        // 3. Capture debt before repay
+        // =============================
+        uint256 debtBefore = pool.getUserBorrow(borrower, address(token1));
+
+        // =============================
+        // 4. Repay part of the debt
+        // =============================
+        vm.startPrank(borrower);
+        pool.repay(address(token1), 20e18);
+        vm.stopPrank();
+
+        // =============================
+        // 5. Capture debt after repay
+        // =============================
+        uint256 debtAfter = pool.getUserBorrow(borrower, address(token1));
+
+        // =============================
+        // 6. Assertions
+        // =============================
+
+        // 🔥 Debt should decrease
+        assertLt(debtAfter, debtBefore);
+
+        // 🔥 Should reduce roughly by repay amount (allow small diff due to interest)
+        assertApproxEqAbs(debtBefore - debtAfter, 20e18, 1e18);
+    }
 }
