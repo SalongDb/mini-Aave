@@ -12,7 +12,7 @@ contract LendingPool {
     mapping(address => address) public aTokens;
     address[] public supportedTokens;
 
-    mapping(address => mapping(address => uint256)) public deposits;
+    mapping(address => mapping(address => uint256)) public scaledDeposits;
     mapping(address => mapping(address => uint256)) public scaledBorrows;
 
     mapping(address => uint256) public totalDeposits;
@@ -20,6 +20,7 @@ contract LendingPool {
 
     mapping(address => uint256) public lastUpdated;
     mapping(address => uint256) public borrowIndex;
+    mapping(address => uint256) public liquidityIndex;
 
     uint256 public constant COLLATERAL_FACTOR = 75;
     uint256 public constant LIQUIDATION_BONUS = 10;
@@ -36,6 +37,7 @@ contract LendingPool {
 
     function addToken(address token, address aToken) external onlyOwner {
         borrowIndex[token] = 1e18;
+        liquidityIndex[token] = 1e18;
         lastUpdated[token] = block.timestamp;
 
         aTokens[token] = aToken;
@@ -52,7 +54,10 @@ contract LendingPool {
 
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 
-        deposits[msg.sender][token] += amount;
+        uint256 index = liquidityIndex[token];
+        uint256 scaled = (amount * 1e18) / index;
+
+        scaledDeposits[msg.sender][token] += scaled;
         totalDeposits[token] += amount;
 
         AToken(aToken).mint(msg.sender, amount);
@@ -66,14 +71,19 @@ contract LendingPool {
         address aToken = aTokens[token];
         require(aToken != address(0), "Token not supported");
 
-        require(deposits[msg.sender][token] >= amount, "Not enough balance");
+        require(
+            getUserDeposits(msg.sender, token) >= amount,
+            "Not enough balance"
+        );
 
         require(
             _healthFactorAfterWithdraw(msg.sender, token, amount) > 1e18,
             "Unhealthy withdraw"
         );
 
-        deposits[msg.sender][token] -= amount;
+        uint256 scaledReduction = (amount * 1e18) / liquidityIndex[token];
+
+        scaledDeposits[msg.sender][token] -= scaledReduction;
         totalDeposits[token] -= amount;
 
         AToken(aToken).burn(msg.sender, amount);
@@ -105,10 +115,8 @@ contract LendingPool {
             IERC20(token).balanceOf(address(this)) >= amount,
             "Not enough liquidity"
         );
-        
         scaledBorrows[msg.sender][token] += scaledAmount;
         totalBorrows[token] += amount;
-
 
         IERC20(token).transfer(msg.sender, amount);
     }
@@ -143,14 +151,29 @@ contract LendingPool {
         uint256 collateralPrice = oracle.getPrice(collateralToken);
         uint256 collateralAmount = (totalValue * 1e18) / collateralPrice;
 
+        uint256 scaledReduction2 = (collateralAmount * 1e18) /
+            liquidityIndex[collateralToken];
+
         require(
-            deposits[user][collateralToken] >= collateralAmount,
+            scaledDeposits[user][collateralToken] >= scaledReduction2,
             "Not enough collateral"
         );
 
-        deposits[user][collateralToken] -= collateralAmount;
+        scaledDeposits[user][collateralToken] -= scaledReduction2;
+
+        AToken(aTokens[collateralToken]).burn(user, collateralAmount);
 
         IERC20(collateralToken).transfer(msg.sender, collateralAmount);
+    }
+
+    function getUserDeposits(
+        address user,
+        address token
+    ) public view returns (uint256) {
+        uint256 scaled = scaledDeposits[user][token];
+        uint256 index = liquidityIndex[token];
+
+        return (scaled * index) / 1e18;
     }
 
     function _getUSDValue(
@@ -166,7 +189,7 @@ contract LendingPool {
     ) internal view returns (uint256 totalValue) {
         for (uint i = 0; i < supportedTokens.length; i++) {
             address token = supportedTokens[i];
-            uint256 amount = deposits[user][token];
+            uint256 amount = getUserDeposits(user, token);
 
             if (amount > 0) {
                 uint256 price = oracle.getPrice(token);
@@ -265,6 +288,7 @@ contract LendingPool {
 
     function accrueInterest(address token) public {
         uint256 timeElapsed = block.timestamp - lastUpdated[token];
+
         if (timeElapsed == 0) return;
 
         uint256 borrows = totalBorrows[token];
@@ -274,7 +298,6 @@ contract LendingPool {
         }
 
         uint256 rate = getBorrowRate(token);
-
         uint256 interestFactor = (rate * timeElapsed) / (365 days);
 
         // 🔥 update index
@@ -287,6 +310,14 @@ contract LendingPool {
         uint256 interest = (borrows * interestFactor) / 1e18;
         totalBorrows[token] += interest;
 
+        if (totalDeposits[token] > 0) {
+            uint256 liquidityGain = (interest * 1e18) / totalDeposits[token];
+
+            liquidityIndex[token] =
+                liquidityIndex[token] +
+                (liquidityIndex[token] * liquidityGain) /
+                1e18;
+        }
         lastUpdated[token] = block.timestamp;
     }
 }

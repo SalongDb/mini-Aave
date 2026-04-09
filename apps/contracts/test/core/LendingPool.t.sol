@@ -86,7 +86,7 @@ contract LendingPoolTest is Test {
 
         // Assertions
         assertLt(pool.scaledBorrows(user, address(token2)), 30e18);
-        assertLt(pool.deposits(user, address(token1)), 100e18);
+        assertLt(pool.getUserDeposits(user, address(token1)), 100e18);
         assertGt(token1.balanceOf(liquidator), 0);
     }
 
@@ -124,8 +124,8 @@ contract LendingPoolTest is Test {
 
         vm.stopPrank();
 
-        assertEq(pool.deposits(user, address(token1)), 100e18);
-        assertEq(pool.deposits(user, address(token2)), 50e18);
+        assertEq(pool.getUserDeposits(user, address(token1)), 100e18);
+        assertEq(pool.getUserDeposits(user, address(token2)), 50e18);
     }
 
     // ----------------------
@@ -198,7 +198,7 @@ contract LendingPoolTest is Test {
 
         vm.stopPrank();
 
-        assertEq(pool.deposits(user, address(token1)), 90e18);
+        assertEq(pool.getUserDeposits(user, address(token1)), 90e18);
     }
 
     function testWithdrawRevertsIfUnhealthy() public {
@@ -245,7 +245,7 @@ contract LendingPoolTest is Test {
     function testUtilization() public {
         vm.startPrank(user);
 
-        pool.deposit(address(token1), 100e18); // deposits = 100
+        pool.deposit(address(token1), 100e18); // getUserDeposits = 100
         pool.borrow(address(token1), 50e18); // scaledBorrows = 50
 
         vm.stopPrank();
@@ -331,5 +331,67 @@ contract LendingPoolTest is Test {
         uint256 afterDebt = pool.getUserBorrow(user, address(token1));
 
         assertGt(afterDebt, before);
+    }
+
+    function testLiquidityIndexAccruesInterest() public {
+        address borrower = address(2);
+
+        // =============================
+        // 1. User getUserDeposits (liquidity provider)
+        // =============================
+        vm.startPrank(user);
+        pool.deposit(address(token1), 100e18);
+        vm.stopPrank();
+
+        // =============================
+        // 2. Borrower setup
+        // =============================
+        token1.mint(borrower, 100e18);
+        token2.mint(borrower, 100e18);
+
+        vm.startPrank(borrower);
+        token2.approve(address(pool), type(uint256).max);
+        token1.approve(address(pool), type(uint256).max);
+
+        // Deposit token2 as collateral ($2 price)
+        pool.deposit(address(token2), 50e18); // $100 collateral
+
+        // Borrow token1 ($1 price)
+        pool.borrow(address(token1), 50e18); // borrow $50
+        vm.stopPrank();
+
+        // =============================
+        // 3. Capture initial state
+        // =============================
+        uint256 initialBalance = pool.getUserDeposits(user, address(token1));
+        uint256 initialIndex = pool.liquidityIndex(address(token1));
+
+        // =============================
+        // 4. Time passes
+        // =============================
+        vm.warp(block.timestamp + 365 days); // 1 year
+
+        // trigger interest
+        pool.accrueInterest(address(token1));
+
+        // =============================
+        // 5. After interest
+        // =============================
+        uint256 finalBalance = pool.getUserDeposits(user, address(token1));
+        uint256 finalIndex = pool.liquidityIndex(address(token1));
+
+        // =============================
+        // 6. Assertions
+        // =============================
+
+        // 🔥 liquidity index should increase
+        assertGt(finalIndex, initialIndex);
+
+        // 🔥 depositor balance should increase
+        assertGt(finalBalance, initialBalance);
+
+        // sanity: borrower debt also increased
+        uint256 borrowerDebt = pool.getUserBorrow(borrower, address(token1));
+        assertGt(borrowerDebt, 50e18);
     }
 }
