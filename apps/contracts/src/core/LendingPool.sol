@@ -4,8 +4,27 @@ pragma solidity ^0.8.20;
 import "../tokens/AToken.sol";
 import "../interfaces/IOracle.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract LendingPool {
+contract LendingPool is ReentrancyGuard {
+    event Deposit(address indexed user, address indexed token, uint256 amount);
+    event Withdraw(address indexed user, address indexed token, uint256 amount);
+    event Borrow(address indexed user, address indexed token, uint256 amount);
+    event Repay(address indexed user, address indexed token, uint256 amount);
+    event Liquidate(
+        address indexed liquidator,
+        address indexed user,
+        address debtToken,
+        address collateralToken,
+        uint256 repayAmount,
+        uint256 collateralSeized
+    );
+    event InterestAccrued(
+    address indexed token,
+    uint256 borrowIndex,
+    uint256 liquidityIndex
+);
+
     address public owner;
     IOracle public oracle;
 
@@ -39,11 +58,13 @@ contract LendingPool {
         liquidityIndex[token] = 1e18;
         lastUpdated[token] = block.timestamp;
 
+        require(aTokens[token] == address(0), "Already added");
+
         aTokens[token] = aToken;
         supportedTokens.push(token);
     }
 
-    function deposit(address token, uint256 amount) external {
+    function deposit(address token, uint256 amount) external nonReentrant {
         accrueInterest(token);
 
         require(amount > 0, "Amount = 0");
@@ -58,9 +79,11 @@ contract LendingPool {
 
         AToken(aToken).mint(msg.sender, scaled);
         totalDeposits[token] += amount;
+
+        emit Deposit(msg.sender, token, amount);
     }
 
-    function withdraw(address token, uint256 amount) external {
+    function withdraw(address token, uint256 amount) external nonReentrant {
         accrueInterest(token);
 
         require(amount > 0, "Amount = 0");
@@ -88,9 +111,11 @@ contract LendingPool {
         totalDeposits[token] -= amount;
 
         IERC20(token).transfer(msg.sender, amount);
+
+        emit Withdraw(msg.sender, token, amount);
     }
 
-    function borrow(address token, uint256 amount) external {
+    function borrow(address token, uint256 amount) external nonReentrant {
         accrueInterest(token);
 
         require(amount > 0, "Amount = 0");
@@ -118,9 +143,11 @@ contract LendingPool {
         totalBorrows[token] += amount;
 
         IERC20(token).transfer(msg.sender, amount);
+
+        emit Borrow(msg.sender, token, amount);
     }
 
-    function repay(address token, uint256 amount) external {
+    function repay(address token, uint256 amount) external nonReentrant {
         accrueInterest(token);
 
         require(amount > 0, "Amount = 0");
@@ -151,6 +178,8 @@ contract LendingPool {
             scaledBorrows[msg.sender][token] = userScaled - scaledReduction;
         }
         totalBorrows[token] -= repayAmount;
+
+        emit Repay(msg.sender, token, repayAmount);
     }
 
     function liquidate(
@@ -158,7 +187,7 @@ contract LendingPool {
         address debtToken,
         address collateralToken,
         uint256 repayAmount
-    ) external {
+    ) external nonReentrant {
         accrueInterest(debtToken);
         accrueInterest(collateralToken);
 
@@ -172,7 +201,11 @@ contract LendingPool {
         uint256 index = borrowIndex[debtToken];
         uint256 scaledReduction = (repayAmount * 1e18) / index;
 
-        scaledBorrows[user][debtToken] -= scaledReduction;
+        if (repayAmount >= userDebt) {
+            scaledBorrows[user][debtToken] = 0;
+        } else {
+            scaledBorrows[user][debtToken] -= scaledReduction;
+        }
         totalBorrows[debtToken] -= repayAmount;
 
         uint256 repayValue = _getUSDValue(debtToken, repayAmount);
@@ -192,9 +225,20 @@ contract LendingPool {
 
         require(scaledBalance >= scaledReduction2, "Not enough collateral");
 
+        totalDeposits[collateralToken] -= collateralAmount;
+
         AToken(aTokens[collateralToken]).burn(user, scaledReduction2);
 
         IERC20(collateralToken).transfer(msg.sender, collateralAmount);
+
+        emit Liquidate(
+            msg.sender,
+            user,
+            debtToken,
+            collateralToken,
+            repayAmount,
+            collateralAmount
+        );
     }
 
     function getUserDeposits(
@@ -350,5 +394,7 @@ contract LendingPool {
                 1e18;
         }
         lastUpdated[token] = block.timestamp;
+
+        emit InterestAccrued(token, borrowIndex[token], liquidityIndex[token]);
     }
 }
