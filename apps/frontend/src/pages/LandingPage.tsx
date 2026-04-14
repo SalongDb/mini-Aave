@@ -1,4 +1,8 @@
+import { useNavigate } from "react-router-dom";
+
 function LandingPage() {
+  const navigate = useNavigate();
+
   const tokens = [
     {
       name: "ETH",
@@ -31,7 +35,7 @@ function LandingPage() {
           DeFi Protocol
         </h1>
 
-        <button className="bg-white text-black px-5 py-2 rounded-lg hover:bg-gray-200 transition font-medium">
+        <button onClick={() => navigate("/app")}  className="bg-white text-black px-5 py-2 rounded-lg hover:bg-gray-200 transition font-medium">
           Launch App
         </button>
       </nav>

@@ -12,19 +12,6 @@ function DepositContent() {
       {/* 🔹 Main */}
       <main className="flex-1 px-10 py-8">
 
-        {/* 🔸 Top Bar */}
-        <div className="flex justify-between items-center mb-12">
-          <input
-            type="text"
-            placeholder="Search token..."
-            className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 w-80 text-sm outline-none focus:ring-2 focus:ring-purple-500"
-          />
-
-          <button className="bg-gradient-to-r from-purple-500 to-blue-500 px-6 py-2 rounded-lg text-sm font-medium hover:opacity-90 transition">
-            Get Started
-          </button>
-        </div>
-
         {/* 🔸 Heading */}
         <div className="mb-10">
           <h2 className="text-3xl font-semibold tracking-tight mb-2">

@@ -32,19 +32,6 @@ function DashboardContent() {
       {/* 🔹 Main */}
       <main className="flex-1 px-10 py-8">
 
-        {/* 🔸 Top Bar */}
-        <div className="flex justify-between items-center mb-12">
-          <input
-            type="text"
-            placeholder="Search token..."
-            className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 w-80 text-sm outline-none focus:ring-2 focus:ring-purple-500"
-          />
-
-          <div className="bg-white/5 px-4 py-2 rounded-lg border border-white/10 text-sm text-gray-300">
-            0xA1b2...9F3d
-          </div>
-        </div>
-
         {/* 🔸 Greeting */}
         <h2 className="text-3xl font-semibold mb-8 tracking-tight">
           {greeting}
